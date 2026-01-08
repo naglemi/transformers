@@ -334,15 +334,16 @@ def isin_mps_friendly(elements: torch.Tensor, test_elements: torch.Tensor | int)
         if test_elements.ndim == 0:
             test_elements = test_elements.unsqueeze(0)
         return elements.tile(test_elements.shape[0], 1).eq(test_elements.unsqueeze(1)).sum(dim=0).bool().squeeze()
-    elif is_xla_device and elements.dtype == torch.int64:
-        # XLA/Neuron doesn't support int64 matmul operations used internally by torch.isin
-        # Cast to int32 for compatibility with AWS Trainium/Inferentia and Google TPU
-        elements_int32 = elements.to(torch.int32)
-        if isinstance(test_elements, torch.Tensor):
-            test_elements_int32 = test_elements.to(torch.int32)
-        else:
-            test_elements_int32 = torch.tensor(test_elements, dtype=torch.int32, device=elements.device)
-        return torch.isin(elements_int32, test_elements_int32)
+    elif is_xla_device:
+        # XLA/Neuron doesn't support matmul operations used internally by torch.isin
+        # Use element-wise comparison instead (same approach as MPS workaround)
+        if not isinstance(test_elements, torch.Tensor):
+            test_elements = torch.tensor(test_elements, device=elements.device)
+        if test_elements.ndim == 0:
+            test_elements = test_elements.unsqueeze(0)
+        # Broadcast comparison: elements [batch, seq] vs test_elements [num_test]
+        # Result: [num_test, batch, seq] -> any match along first dim -> [batch, seq]
+        return elements.unsqueeze(0).eq(test_elements.unsqueeze(-1).unsqueeze(-1)).any(dim=0)
     else:
         # Note: don't use named arguments in `torch.isin`, see https://github.com/pytorch/pytorch/issues/126045
         return torch.isin(elements, test_elements)
