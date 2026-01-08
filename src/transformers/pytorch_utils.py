@@ -336,14 +336,19 @@ def isin_mps_friendly(elements: torch.Tensor, test_elements: torch.Tensor | int)
         return elements.tile(test_elements.shape[0], 1).eq(test_elements.unsqueeze(1)).sum(dim=0).bool().squeeze()
     elif is_xla_device:
         # XLA/Neuron doesn't support matmul operations used internally by torch.isin
-        # Use element-wise comparison instead (same approach as MPS workaround)
+        # Use element-wise comparison instead
         if not isinstance(test_elements, torch.Tensor):
             test_elements = torch.tensor(test_elements, device=elements.device)
         if test_elements.ndim == 0:
             test_elements = test_elements.unsqueeze(0)
-        # Broadcast comparison: elements [batch, seq] vs test_elements [num_test]
-        # Result: [num_test, batch, seq] -> any match along first dim -> [batch, seq]
-        return elements.unsqueeze(0).eq(test_elements.unsqueeze(-1).unsqueeze(-1)).any(dim=0)
+        # For each element, check if it matches any test_element
+        # elements: [...], test_elements: [num_test]
+        # Reshape for broadcasting: elements [..., 1] == test_elements [1, ..., 1, num_test]
+        # Then reduce along last dimension with .any()
+        test_shape = [1] * elements.ndim + [test_elements.size(0)]
+        test_elements_reshaped = test_elements.reshape(test_shape)
+        elements_expanded = elements.unsqueeze(-1)
+        return elements_expanded.eq(test_elements_reshaped).any(dim=-1)
     else:
         # Note: don't use named arguments in `torch.isin`, see https://github.com/pytorch/pytorch/issues/126045
         return torch.isin(elements, test_elements)
