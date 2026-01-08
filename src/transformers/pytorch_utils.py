@@ -316,8 +316,8 @@ def id_tensor_storage(tensor: torch.Tensor) -> Tuple[torch.device, int, int]:
 
 def isin_mps_friendly(elements: torch.Tensor, test_elements: torch.Tensor | int) -> torch.Tensor:
     """
-    Same as `torch.isin` without flags, but MPS-friendly. We can remove this function when we stop supporting
-    torch <= 2.3. See https://github.com/pytorch/pytorch/issues/77764#issuecomment-2067838075
+    Same as `torch.isin` without flags, but MPS-friendly and XLA/Neuron-friendly. We can remove this function when
+    we stop supporting torch <= 2.3. See https://github.com/pytorch/pytorch/issues/77764#issuecomment-2067838075
 
     Args:
         elements (`torch.Tensor`): Input elements
@@ -327,12 +327,22 @@ def isin_mps_friendly(elements: torch.Tensor, test_elements: torch.Tensor | int)
         `torch.Tensor`: A boolean tensor of the same shape as `elements` that is True for `elements` in `test_elements`
         and False otherwise
     """
+    is_xla_device = elements.device.type == "xla"
 
     if elements.device.type == "mps" and not is_torch_greater_or_equal_than_2_4:
         test_elements = torch.tensor(test_elements)
         if test_elements.ndim == 0:
             test_elements = test_elements.unsqueeze(0)
         return elements.tile(test_elements.shape[0], 1).eq(test_elements.unsqueeze(1)).sum(dim=0).bool().squeeze()
+    elif is_xla_device and elements.dtype == torch.int64:
+        # XLA/Neuron doesn't support int64 matmul operations used internally by torch.isin
+        # Cast to int32 for compatibility with AWS Trainium/Inferentia and Google TPU
+        elements_int32 = elements.to(torch.int32)
+        if isinstance(test_elements, torch.Tensor):
+            test_elements_int32 = test_elements.to(torch.int32)
+        else:
+            test_elements_int32 = torch.tensor(test_elements, dtype=torch.int32, device=elements.device)
+        return torch.isin(elements_int32, test_elements_int32)
     else:
         # Note: don't use named arguments in `torch.isin`, see https://github.com/pytorch/pytorch/issues/126045
         return torch.isin(elements, test_elements)
